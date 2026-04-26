@@ -63,6 +63,15 @@
 #define SYSTEM_DBG_DTRTX_EL0	0x9828
 #define SYSTEM_DBG_DBGDTR_EL0	0x9820
 
+/*
+ * OS Double Lock Register, op0=2 op1=0 CRn=1 CRm=3 op2=4.
+ * See ARM ARM (ARMv8-A) section D13.2.96 (OSDLR_EL1) and the AArch64
+ * system-register encoding in D7.2 (the 16-bit "Op0:Op1:CRn:CRm:Op2"
+ * value used by MSR/MRS reg, Xt). Bit 0 is DLK; while DLK==1 the
+ * external debug interface is held off.
+ */
+#define SYSTEM_OSDLR_EL1	0x809C
+
 #define SYSTEM_CCSIDR			0xC800
 #define SYSTEM_CLIDR			0xC801
 #define SYSTEM_CSSELR			0xD000

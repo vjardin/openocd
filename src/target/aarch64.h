@@ -56,6 +56,16 @@ struct aarch64_common {
 	struct aarch64_brp *wp_list;
 
 	enum aarch64_isrmasking_mode isrmasking_mode;
+
+	/*
+	 * ID_AA64DFR0_EL1.DoubleLock (bits [39:36]) probed at examine
+	 * time. ARM ARM (ARMv8-A) D17.2.45: 0b0000 = OS Double-Lock
+	 * implemented (OSDLR_EL1.DLK is RW), 0b1111 = not implemented
+	 * (writes to OSDLR_EL1 are CONSTRAINED UNPREDICTABLE on those
+	 * cores). Used to gate the resume-time DLK clear so we don't
+	 * spam warnings on cores without the feature.
+	 */
+	bool osdlr_implemented;
 };
 
 static inline struct aarch64_common *

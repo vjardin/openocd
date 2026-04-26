@@ -641,6 +641,7 @@ static int aarch64_halt(struct target *target)
 static int aarch64_restore_one(struct target *target, bool current,
 	uint64_t *address, bool handle_breakpoints, bool debug_execution)
 {
+	struct aarch64_common *aarch64 = target_to_aarch64(target);
 	struct armv8_common *armv8 = target_to_armv8(target);
 	struct arm *arm = &armv8->arm;
 	int retval;
@@ -683,6 +684,50 @@ static int aarch64_restore_one(struct target *target, bool current,
 	buf_set_u64(arm->pc->value, 0, 64, resume_pc);
 	arm->pc->dirty = true;
 	arm->pc->valid = true;
+
+	/*
+	 * Clear OSDLR_EL1.DLK before resume, on cores that implement
+	 * the OS Double-Lock.
+	 *
+	 * Per the ARM Architecture Reference Manual (ARMv8-A,
+	 * D13.2.96 OSDLR_EL1) the OS Double Lock, when asserted,
+	 * holds off the external debug interface and prevents the
+	 * core from being re-attached. There is no memory-mapped
+	 * way to clear DLK from outside the core: the architecture
+	 * requires "MSR OSDLR_EL1, Xt" executed on the core itself.
+	 * On cores where the feature is not implemented
+	 * (ID_AA64DFR0_EL1.DoubleLock == 0b1111, see D17.2.45),
+	 * MSR to OSDLR_EL1 is CONSTRAINED UNPREDICTABLE - the probe
+	 * cached at examine time gates the injection so we don't
+	 * touch it on those cores.
+	 *
+	 * On NXP Layerscape LX2160A the secure firmware (TF-A
+	 * plat/nxp/soc-lx2160a/aarch64/lx2160a.S, LPM20 wake path)
+	 * explicitly issues this clear on resume from low-power.
+	 * If a debugger halts the core after a path that left DLK
+	 * asserted (or simply re-attaches to a halted core that
+	 * came up that way), resuming without clearing DLK leaves
+	 * the debug unit gated and any subsequent re-halt or step
+	 * fails until the next true POR. Mirror the firmware's
+	 * behaviour by clearing DLK from the debugger via DPM
+	 * instruction injection on every resume; bit 0 is the only
+	 * defined bit in OSDLR_EL1 so writing 0 is the documented
+	 * "release" value.
+	 *
+	 * The injection runs while the core is halted (called from
+	 * the resume path after register state has been staged but
+	 * before the CTI restart pulse), so MSR access is permitted.
+	 * A failure here only means DLK could not be cleared; warn
+	 * and continue, since the resume itself may still succeed.
+	 */
+	if (aarch64->osdlr_implemented) {
+		retval = armv8->dpm.instr_write_data_r0_64(&armv8->dpm,
+				ARMV8_MSR_GP(SYSTEM_OSDLR_EL1, 0), 0);
+		if (retval != ERROR_OK)
+			LOG_WARNING("%s: clearing OSDLR_EL1.DLK failed; "
+					"debug unit may be left gated on resume",
+					target_name(target));
+	}
 
 	/* called it now before restoring context because it uses cpu
 	 * register r0 for restoring system control register */
@@ -2760,6 +2805,15 @@ static int aarch64_examine_first(struct target *target)
 	ttypr = (ttypr << 32) | tmp0;
 	debug |= tmp3;
 	debug = (debug << 32) | tmp2;
+
+	/*
+	 * ID_AA64DFR0_EL1.DoubleLock (bits [39:36]) - per the ARM ARM
+	 * (ARMv8-A, D17.2.45) the field is 0b0000 when OS Double-Lock
+	 * is implemented and 0b1111 when it is not. Cache the result
+	 * so the resume path can skip the OSDLR_EL1 MSR on cores that
+	 * do not implement the feature.
+	 */
+	aarch64->osdlr_implemented = (((debug >> 36) & 0xfULL) != 0xfULL);
 
 	LOG_DEBUG("cpuid = 0x%08" PRIx32, cpuid);
 	LOG_DEBUG("ttypr = 0x%08" PRIx64, ttypr);
